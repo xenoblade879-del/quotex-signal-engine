@@ -1,0 +1,88 @@
+
+import os
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List
+
+app = FastAPI(title="Quotex Signal Engine")
+
+class Candle(BaseModel):
+    open: float
+    high: float
+    low: float
+    close: float
+
+class AnalysisRequest(BaseModel):
+    pair: str = "EUR/USD"
+    timeframe: str = "1m"
+    candles: List[Candle]
+
+@app.get("/")
+def home():
+    return {
+        "status": "online",
+        "engine": "Quotex Signal Engine",
+        "mode": "Signal only"
+    }
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+
+@app.post("/analyze")
+def analyze(data: AnalysisRequest):
+    candles = data.candles
+
+    if len(candles) < 20:
+        raise HTTPException(
+            status_code=400,
+            detail="At least 20 candles are required"
+        )
+
+    closes = [c.close for c in candles]
+
+    if any(c.high < c.low for c in candles):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid candle data"
+        )
+
+    fast_ema = sum(closes[-9:]) / 9
+    slow_ema = sum(closes[-20:]) / 20
+
+    changes = [
+        closes[i] - closes[i - 1]
+        for i in range(1, len(closes))
+    ]
+
+    gains = [max(x, 0) for x in changes[-14:]]
+    losses = [max(-x, 0) for x in changes[-14:]]
+
+    avg_gain = sum(gains) / 14
+    avg_loss = sum(losses) / 14
+
+    if avg_loss == 0:
+        rsi = 100 if avg_gain > 0 else 50
+    else:
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+    direction = "WAIT"
+
+    if fast_ema > slow_ema and 50 < rsi < 70:
+        direction = "UP"
+    elif fast_ema < slow_ema and 30 < rsi < 50:
+        direction = "DOWN"
+
+    return {
+        "pair": data.pair,
+        "timeframe": data.timeframe,
+        "direction": direction,
+        "rsi": round(rsi, 2),
+        "fast_ema": round(fast_ema, 6),
+        "slow_ema": round(slow_ema, 6),
+        "last_price": closes[-1],
+        "data_source": "Submitted candles",
+        "automatic_trading": False,
+        "warning": "Technical analysis is not a guaranteed prediction."
+    }
